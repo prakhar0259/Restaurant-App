@@ -1,0 +1,153 @@
+  
+name: basket-api
+
+on:
+  push:
+    branches:
+    - develop
+    paths:
+    - 'src/backend/services/order.api/**'
+    - '.github/workflows/basket-api.yml'
+
+  pull_request:
+    branches:
+    - develop
+    paths:
+    - 'src/backend/services/basket.api/**'
+    - '.github/workflows/basket-api.yml'
+
+env:
+  SERVICE_NAME: basket.api
+  ARTIFACT_NAME: basket-api-artifact
+  IMAGE_NAME: jurabek/basket
+
+jobs:
+  build:
+    outputs:
+      new-version: ${{ steps.version.outputs.new-version }}
+      current-version:  ${{ steps.version.outputs.current-version }}
+
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        fetch-depth: '0'
+
+    - name: Install Go
+      uses: actions/setup-go@v1
+      with:
+        go-version: 1.13.x
+
+    - uses: actions/checkout@v2
+      with:
+        fetch-depth: '0'
+
+    - name: Setup cache
+      uses: actions/cache@v1
+      with:
+        path: ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/basket.api/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+    
+    - name: "Bump Version"
+      if: github.ref == 'refs/heads/develop'
+      id: version
+      uses: ./.github/actions/bump-go-version
+      with:
+        service-name: ${{ env.SERVICE_NAME }}
+    
+    - name: "🚀 Build & Test"
+      uses: ./.github/actions/compile-go
+      with:
+        service-name: ${{ env.SERVICE_NAME }}
+
+    - name: "📦 Package go app"
+      if: github.ref == 'refs/heads/develop'
+      uses: ./.github/actions/package-go
+      with:
+        service-name: ${{ env.SERVICE_NAME }}
+        app-version: ${{ steps.version.outputs.new-version }}
+        commit-sha: ${{ github.sha }}
+
+    - name: "📤 Upload artifact"
+      if: github.ref == 'refs/heads/develop'
+      uses: actions/upload-artifact@v1
+      with:
+        name: ${{ env.ARTIFACT_NAME }}
+        path: ./src/backend/services/${{ env.SERVICE_NAME }}/${{ env.SERVICE_NAME }}
+    
+    - name: "Commit bumped version"
+      if: github.ref == 'refs/heads/develop'
+      uses: ./.github/actions/git-commit
+      with:
+        git-message: Bumped ${{ env.SERVICE_NAME }} version from  ${{ steps.version.outputs.current-version }} to ${{ steps.version.outputs.new-version }}
+        directory: ./src/backend/services/${{ env.SERVICE_NAME }}
+        origin-branch: ${{ github.ref }}
+        
+    - name: "Push changes into master"
+      if: github.ref == 'refs/heads/develop'
+      uses: ./.github/actions/git-push
+      with:
+        origin-branch: ${{ github.ref }}
+  
+  release:
+    if: github.ref == 'refs/heads/develop'
+    outputs:
+      new-version: ${{ needs.build.outputs.new-version }}
+      current-version: ${{ needs.build.outputs.current-version }}
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v1
+    - name: Download basket-api artifact
+      uses: actions/download-artifact@v1
+      with:
+        name: ${{ env.ARTIFACT_NAME }}
+    - name: Copy artifact to working directory
+      shell: bash
+      run: |
+        cp ${{ env.ARTIFACT_NAME }}/basket.api ./src/backend/services/basket.api/
+    - name: Publish docker image
+      uses: elgohr/Publish-Docker-Github-Action@master
+      with:
+        name: ${{ env.IMAGE_NAME }}
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+        dockerfile: release.Dockerfile
+        workdir: ./src/backend/services/basket.api
+        tags: ${{ needs.build.outputs.new-version }}
+
+  update-manifests:
+    if: github.ref == 'refs/heads/develop'
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main repo
+        uses: actions/checkout@v2
+
+      - uses: imranismail/setup-kustomize@v1
+        with:
+          kustomize-version: "3.9.2"
+      
+      - name: Change manifests
+        env:
+          KUSTOMIZE_IMAGE_NAME: basket-api
+          IMG: ${{ env.IMAGE_NAME }}:${{ needs.release.outputs.new-version }}
+        run: |
+          cd ./manifests/services/${{ env.SERVICE_NAME }}/base
+          kustomize edit set image $KUSTOMIZE_IMAGE_NAME=$IMG
+          cat kustomization.yaml
+
+      - name: Commit manifest deploy changes
+        uses: ./.github/actions/git-commit
+        with:
+          git-message: Deploying ${{ env.SERVICE_NAME }}:${{ needs.release.outputs.new-version }}  
+          directory: ./manifests/services/${{ env.SERVICE_NAME }}/base
+          origin-branch: develop
+
+      - name: "Push changes into develop"
+        uses: ./.github/actions/git-push
+        with:
+          origin-branch: ${{ github.ref }}
+

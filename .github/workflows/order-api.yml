@@ -1,0 +1,79 @@
+name: order-api
+
+on:
+  push:
+    branches:
+      - develop
+    paths:
+      - 'src/backend/services/order.api/**'
+      - '.github/workflows/order-api.yml'
+  pull_request:
+    branches:
+    - develop
+    paths:
+    - 'src/backend/services/order.api/**'
+    - '.github/workflows/order-api.yml'
+
+jobs:
+  build-and-test:
+    name: build and test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [macOS-latest, ubuntu-latest]
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        fetch-depth: '0'
+
+    - name: Set up JDK
+      uses: actions/setup-java@v1
+      with:
+        java-version: 11
+    
+    - uses: actions/cache@v1
+      with:
+        path: ~/.gradle/caches
+        key: ${{ runner.os }}-gradle-${{ hashFiles('**/order.api/build.gradle') }}
+        restore-keys: |
+          ${{ runner.os }}-gradle-
+    
+    - name: Build & QA
+      run: |
+        echo $PATH
+        chmod -R +x scripts/
+        scripts/build.sh order_api
+        scripts/qa.sh order_api
+      working-directory: ./src/backend/
+      env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Upload order-api artifact
+      uses: actions/upload-artifact@v1
+      with:
+        name: order_api
+        path: ./src/backend/services/order.api/build/libs/order.api.jar
+      if: matrix.os == 'ubuntu-latest'
+
+
+  docker-push:
+      needs: build-and-test
+      runs-on: ubuntu-latest
+      steps:
+      - uses: actions/checkout@v1
+      - name: Download basket-api artifact
+        uses: actions/download-artifact@v1
+        with:
+          name: order_api
+      - name: Copy artifact to working directory
+        shell: bash
+        run: |
+          cp order_api/order.api.jar ./src/backend/services/order.api/
+      - name: Publish docker image
+        uses: elgohr/Publish-Docker-Github-Action@master
+        with:
+          name: jurabek/order
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+          dockerfile: release.Dockerfile
+          workdir: ./src/backend/services/order.api

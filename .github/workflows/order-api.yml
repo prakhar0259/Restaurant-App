@@ -70,7 +70,7 @@ jobs:
         run: |
           cp order_api/order.api.jar ./src/backend/services/order.api/
       - name: Publish docker image
-        uses: elgohr/Publish-Docker-Github-Action@master
+        uses: elgohr/Publish-Docker-Github-Action@v5
         with:
           name: jurabek/order
           username: ${{ secrets.DOCKER_USERNAME }}
